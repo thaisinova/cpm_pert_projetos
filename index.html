@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -7,6 +8,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800;900&family=Open+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.0/Sortable.min.js"></script>
 <style>
 :root{
   --black:#111111;--black2:#1e1e1e;--black3:#2a2a2a;
@@ -218,6 +220,20 @@ canvas#gantt-cv{display:block;}
   .a4{display:block!important;}
   .a4-page{page-break-after:always;page-break-inside:avoid;}
 }
+
+/* SPRINT BADGE */
+.sprint-badge{display:inline-block;padding:2px 8px;border-radius:10px;font-family:'Montserrat',sans-serif;font-size:10px;font-weight:700;letter-spacing:.5px;}
+.sprint-s2{background:#e8f4fd;color:#1a6fa8;}
+.sprint-s3{background:#e8fdf0;color:#157a45;}
+.sprint-s4{background:#fdf3e8;color:#a85f1a;}
+/* DRAG HANDLE */
+.drag-handle{cursor:grab;color:var(--g3);font-size:15px;padding:0 6px;user-select:none;}
+.drag-handle:hover{color:var(--txt);}
+tr.sortable-ghost{opacity:.4;background:#fff0f0;}
+/* SPRINT SELECT */
+table.inp-tbl select.sprint-sel{background:var(--g1);border:1px solid var(--g2);border-radius:4px;color:var(--txt);font-family:'Montserrat',sans-serif;font-size:11px;font-weight:700;padding:5px 6px;width:58px;outline:none;cursor:pointer;transition:border-color .15s;}
+table.inp-tbl select.sprint-sel:focus{border-color:var(--red);background:#fff;}
+
 </style>
 </head>
 <body>
@@ -292,7 +308,7 @@ canvas#gantt-cv{display:block;}
       <table class="inp-tbl">
         <thead>
           <tr>
-            <th>#</th><th>ID</th><th>Nome da Atividade</th>
+            <th></th><th>#</th><th>ID</th><th>Sprint</th><th>Nome da Atividade</th>
             <th>Otimista (O)</th><th>Mais Provável (M)</th><th>Pessimista (P)</th>
             <th>Predecessores</th><th></th>
           </tr>
@@ -502,9 +518,15 @@ function addRow(d){
   var uid=uidCtr++;
   var tr=document.createElement('tr');
   tr.dataset.uid=uid;
+  var sprintVal=d.sprint||'S2';
+  var sprintOpts=['S2','S3','S4'].map(function(s){
+    return'<option value="'+s+'"'+(s===sprintVal?' selected':'')+'>'+s+'</option>';
+  }).join('');
   tr.innerHTML=
+    '<td class="drag-handle" title="Arrastar para reordenar">⠿</td>'+
     '<td class="row-n"></td>'+
     '<td><input data-f="id"    value="'+ea(d.id   ||'')+'" placeholder="A"   style="width:48px"></td>'+
+    '<td><select data-f="sprint" class="sprint-sel">'+sprintOpts+'</select></td>'+
     '<td><input data-f="name"  value="'+ea(d.name ||'')+'" placeholder="Nome da atividade"></td>'+
     '<td><input data-f="O"     value="'+ea(d.O!=null?d.O:'')+'" placeholder="1" type="number" min="0" step="any" style="width:68px"></td>'+
     '<td><input data-f="M"     value="'+ea(d.M!=null?d.M:'')+'" placeholder="3" type="number" min="0" step="any" style="width:68px"></td>'+
@@ -516,10 +538,43 @@ function addRow(d){
 }
 function removeRow(uid){var t=document.querySelector('tr[data-uid="'+uid+'"]');if(t)t.remove();reindex();}
 function reindex(){var ts=document.querySelectorAll('#act-body tr');for(var i=0;i<ts.length;i++)ts[i].querySelector('.row-n').textContent=i+1;}
+
+/* ── Auto-renumber IDs and fix predecessors after drag-and-drop ── */
+function reindexIds(){
+  var rows=Array.from(document.querySelectorAll('#act-body tr'));
+  // Build old→new ID map using current ID inputs (before renaming)
+  var oldIds=rows.map(function(tr){return tr.querySelector('[data-f="id"]').value.trim();});
+  // Determine prefix per row from sprint value, or keep existing prefix
+  var newIds=oldIds.map(function(oldId,i){
+    // Keep letter prefix if present (A,B,C), else use A
+    var m=oldId.match(/^([A-Za-z]+)/);
+    var prefix=m?m[1]:'A';
+    // Count how many rows share this prefix so far
+    var seq=oldIds.slice(0,i+1).filter(function(id){return id.match(new RegExp('^'+prefix,'i'));}).length;
+    return prefix+seq;
+  });
+  // Build old→new map
+  var map={};
+  oldIds.forEach(function(oid,i){if(oid)map[oid]=newIds[i];});
+  // Apply new IDs
+  rows.forEach(function(tr,i){
+    tr.querySelector('[data-f="id"]').value=newIds[i];
+  });
+  // Update predecessor references
+  rows.forEach(function(tr){
+    var inp=tr.querySelector('[data-f="preds"]');
+    if(!inp.value.trim())return;
+    inp.value=inp.value.split(',').map(function(p){
+      p=p.trim();return map[p]||p;
+    }).join(',');
+  });
+  reindex();
+}
 function readRows(){
   return Array.from(document.querySelectorAll('#act-body tr')).map(function(tr){
     return{
       id:tr.querySelector('[data-f="id"]').value.trim(),
+      sprint:tr.querySelector('[data-f="sprint"]').value,
       name:tr.querySelector('[data-f="name"]').value.trim(),
       O:parseFloat(tr.querySelector('[data-f="O"]').value),
       M:parseFloat(tr.querySelector('[data-f="M"]').value),
@@ -1281,7 +1336,7 @@ function buildPayload(){
     timeUnit:getUnit(),
     created:new Date().toISOString().slice(0,10),
     activities:readRows().map(function(a){
-      return{id:a.id,name:a.name,O:a.O,M:a.M,P:a.P,preds:a.preds.join(',')};
+      return{id:a.id,sprint:a.sprint||'',name:a.name,O:a.O,M:a.M,P:a.P,preds:a.preds.join(',')};
     })
   },null,2);
 }
@@ -1336,7 +1391,7 @@ function doImport(){
   if(obj.startDate) document.getElementById('start-date').value=obj.startDate;
   if(obj.timeUnit)  document.getElementById('time-unit').value=obj.timeUnit;
   obj.activities.forEach(function(a){
-    addRow({id:String(a.id||''),name:String(a.name||''),O:a.O,M:a.M,P:a.P,preds:a.preds||''});
+    addRow({id:String(a.id||''),sprint:String(a.sprint||'S2'),name:String(a.name||''),O:a.O,M:a.M,P:a.P,preds:a.preds||''});
   });
   closeModal('modal-import');
   calculate();
@@ -1349,7 +1404,25 @@ document.addEventListener('click',function(e){if(e.target.classList.contains('mo
    BOOT — auto-set today's date from PC
 ══════════════════════════════════════ */
 document.getElementById('start-date').value=todayISO();
-loadExample();
+/* Pre-carregar projeto SFM Inova */
+(function(){
+  var sfmData={"schema":"inova-pert-v1","project":"Shop Floor Management \u2014 Inova Sistemas Eletr\u00f4nicos","startDate":"2026-04-28","timeUnit":"days","activities":[{"id":"A1","sprint":"S2","name":"Benchmarking Marcopolo e Randon","O":3,"M":5,"P":10,"preds":""},{"id":"A2","sprint":"S2","name":"Mapa mental do projeto SFM","O":8,"M":10,"P":15,"preds":"A1"},{"id":"A3","sprint":"S2","name":"Definicao dos indicadores e metas","O":2,"M":2,"P":3,"preds":"A1"},{"id":"A4","sprint":"S2","name":"Definicao da rotina N0-N4","O":2,"M":3,"P":5,"preds":"A1"},{"id":"A5","sprint":"S2","name":"Papeis e responsabilidades","O":1,"M":2,"P":3,"preds":"A4"},{"id":"A6","sprint":"S2","name":"Planejamento do cronograma de expansao","O":1,"M":1,"P":2,"preds":"A3,A4"},{"id":"A7","sprint":"S2","name":"Cadastro do projeto no make.it","O":1,"M":1,"P":1,"preds":"A1"},{"id":"A8","sprint":"S2","name":"Formulario de plano de acoes no runrun.it","O":1,"M":2,"P":3,"preds":"A7"},{"id":"A9","sprint":"S2","name":"Elaboracao do PERT/CPM","O":1,"M":2,"P":3,"preds":"A3,A4,A5,A6"},{"id":"A10","sprint":"S2","name":"TAP finalizada","O":2,"M":4,"P":7,"preds":"A2,A3,A4,A5,A6,A9"},{"id":"A11","sprint":"S2","name":"Divulgacao interna (WhatsApp e mural)","O":1,"M":2,"P":3,"preds":"A10"},{"id":"A12","sprint":"S2","name":"Reuniao com supervisor/gerente - alinhamento","O":1,"M":3,"P":5,"preds":"A10"},{"id":"A13","sprint":"S2","name":"Reuniao com direcao - Eleandro e Suzin (antes do kick-off)","O":1,"M":3,"P":5,"preds":"A10,A12"},{"id":"A14","sprint":"S2","name":"Reuniao de kick-off","O":1,"M":2,"P":3,"preds":"A13"},{"id":"A15","sprint":"S2","name":"Compra ou fabricacao do quadro fisico - URGENTE","O":15,"M":20,"P":30,"preds":"A14"},{"id":"A16","sprint":"S2","name":"Diagnostico e levantamento de baseline (base SINCRONIZA)","O":3,"M":5,"P":10,"preds":"A14"},{"id":"A17","sprint":"S2","name":"Elaboracao de materiais e conteudo de treinamento","O":3,"M":7,"P":15,"preds":"A3,A4,A16"},{"id":"A18","sprint":"S2","name":"IT da reuniao diaria (roteiro e templates N0-N4)","O":3,"M":5,"P":10,"preds":"A4,A16"},{"id":"A19","sprint":"S2","name":"Definicao do registro de acoes digital (runrun.it ou HTML)","O":2,"M":3,"P":5,"preds":"A18"},{"id":"A20","sprint":"S2","name":"Treinamento N0 e N1 - analistas e supervisores MTA Industrial","O":3,"M":5,"P":8,"preds":"A17,A18,A19"},{"id":"A21","sprint":"S2","name":"Instalacao do quadro na fabrica - MTA Industrial","O":1,"M":3,"P":5,"preds":"A15"},{"id":"A22","sprint":"S2","name":"Inicio e estabilizacao das reunioes - MTA Industrial - MARCO","O":5,"M":10,"P":20,"preds":"A20,A21"},{"id":"B1","sprint":"S3","name":"Monitoramento de aderencia MTA Industrial (meta 90%)","O":15,"M":20,"P":30,"preds":"A22"},{"id":"B2","sprint":"S3","name":"Ajustes de indicadores com base na pratica","O":5,"M":8,"P":15,"preds":"B1"},{"id":"B3","sprint":"S3","name":"Instalacao e treinamento - MTA Resfriar","O":15,"M":30,"P":60,"preds":"A22"},{"id":"B4","sprint":"S3","name":"Inicio das reunioes diarias - MTA Resfriar - MARCO","O":1,"M":1,"P":2,"preds":"B3"},{"id":"B5","sprint":"S3","name":"Instalacao e treinamento - MTA Itinerario","O":15,"M":30,"P":60,"preds":"A22"},{"id":"B6","sprint":"S3","name":"Inicio das reunioes diarias - MTA Itinerario - MARCO","O":1,"M":1,"P":2,"preds":"B5"},{"id":"B7","sprint":"S3","name":"Coaching dos facilitadores - primeiras semanas de operacao","O":10,"M":15,"P":30,"preds":"B4,B6"},{"id":"C1","sprint":"S4","name":"Instalacao e treinamento - SMT Montagem de Placas","O":15,"M":30,"P":60,"preds":"B4,B6"},{"id":"C2","sprint":"S4","name":"Inicio das reunioes diarias - SMT - MARCO","O":1,"M":1,"P":2,"preds":"C1"},{"id":"C3","sprint":"S4","name":"Revisao das metas e indicadores","O":2,"M":3,"P":5,"preds":"B1,B2"},{"id":"C4","sprint":"S4","name":"Auditoria de maturidade SFM - todas as areas","O":5,"M":10,"P":20,"preds":"C2,B7"},{"id":"C5","sprint":"S4","name":"Analise de resultados vs baseline SINCRONIZA","O":3,"M":5,"P":10,"preds":"C4"},{"id":"C6","sprint":"S4","name":"Workshop de licoes aprendidas","O":2,"M":3,"P":5,"preds":"C4"},{"id":"C7","sprint":"S4","name":"Manual Padrao Inova de Shop Floor Management","O":5,"M":10,"P":20,"preds":"C4"},{"id":"C8","sprint":"S4","name":"Handover - passagem da rotina para lideranca operacional","O":3,"M":5,"P":10,"preds":"C5,C7"},{"id":"C9","sprint":"S4","name":"Apresentacao executiva final - Daltro, Eleandro e Suzin","O":2,"M":3,"P":5,"preds":"C5,C6,C8"},{"id":"C10","sprint":"S4","name":"Documentacao e arquivamento do projeto","O":2,"M":3,"P":5,"preds":"C9"}]};
+  clearAll();
+  document.getElementById('proj-name').value=sfmData.project||'';
+  document.getElementById('start-date').value=sfmData.startDate||todayISO();
+  if(sfmData.timeUnit)document.getElementById('time-unit').value=sfmData.timeUnit;
+  sfmData.activities.forEach(function(a){
+    addRow({id:String(a.id||''),sprint:String(a.sprint||'S2'),name:String(a.name||''),O:a.O,M:a.M,P:a.P,preds:a.preds||''});
+  });
+  calculate();
+})();
+/* Initialize drag-and-drop on activity table */
+Sortable.create(document.getElementById('act-body'),{
+  handle:'.drag-handle',
+  animation:150,
+  ghostClass:'sortable-ghost',
+  onEnd:reindexIds
+});
 </script>
 </body>
 </html>
