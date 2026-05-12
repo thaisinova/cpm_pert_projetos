@@ -254,10 +254,11 @@ table.inp-tbl select.sprint-sel:focus{border-color:var(--red);background:#fff;}
     <div class="page-lbl">PERT / CPM — Planejamento de Projetos</div>
   </div>
   <div class="nav-btns">
+    <button class="btn red" onclick="saveJSON()" id="save-btn" title="Salvar projeto como arquivo JSON">💾 Salvar</button>
     <button class="btn" onclick="openImport()">⬆ Importar JSON</button>
     <button class="btn" onclick="exportJSON()">⬇ Exportar JSON</button>
     <button class="btn wh" onclick="printA4()">🖨 Imprimir A4</button>
-    <button class="btn red" onclick="exportPDF()">⬇ Exportar PDF</button>
+    <button class="btn wh" onclick="exportPDF()">⬇ Exportar PDF</button>
     <button class="btn ored" onclick="loadExample()">Exemplo</button>
     <button class="btn sm" onclick="clearAll()">Limpar</button>
   </div>
@@ -1339,6 +1340,19 @@ function buildPayload(){
       return{id:a.id,sprint:a.sprint||'',name:a.name,O:a.O,M:a.M,P:a.P,preds:a.preds.join(',')};
     })
   },null,2);
+}
+function saveJSON(){
+  var blob=new Blob([buildPayload()],{type:'application/json'});
+  var url=URL.createObjectURL(blob);
+  var a=document.createElement('a');
+  a.href=url;
+  a.download='SFM_PERT_CPM.json';
+  a.click();
+  URL.revokeObjectURL(url);
+  var btn=document.getElementById('save-btn');
+  var orig=btn.textContent;
+  btn.textContent='✓ Salvo!';
+  setTimeout(function(){btn.textContent=orig;},1500);
 }
 function exportJSON(){document.getElementById('export-ta').value=buildPayload();openModal('modal-export');}
 function copyExport(btn){
