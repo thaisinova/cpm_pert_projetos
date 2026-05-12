@@ -543,33 +543,44 @@ function reindex(){var ts=document.querySelectorAll('#act-body tr');for(var i=0;
 /* ── Auto-renumber IDs and fix predecessors after drag-and-drop ── */
 function reindexIds(){
   var rows=Array.from(document.querySelectorAll('#act-body tr'));
-  // Build old→new ID map using current ID inputs (before renaming)
-  var oldIds=rows.map(function(tr){return tr.querySelector('[data-f="id"]').value.trim();});
-  // Determine prefix per row from sprint value, or keep existing prefix
-  var newIds=oldIds.map(function(oldId,i){
-    // Keep letter prefix if present (A,B,C), else use A
-    var m=oldId.match(/^([A-Za-z]+)/);
-    var prefix=m?m[1]:'A';
-    // Count how many rows share this prefix so far
-    var seq=oldIds.slice(0,i+1).filter(function(id){return id.match(new RegExp('^'+prefix,'i'));}).length;
-    return prefix+seq;
+  if(!rows.length) return;
+
+  // 1. Capture old IDs BEFORE any renaming
+  var oldIds=rows.map(function(tr){
+    return tr.querySelector('[data-f="id"]').value.trim();
   });
-  // Build old→new map
+
+  // 2. Compute new sequential IDs (keep letter prefix, reset counter)
+  var prefixCount={};
+  var newIds=oldIds.map(function(oldId){
+    var m=oldId.match(/^([A-Za-z]+)/);
+    var prefix=m?m[1].toUpperCase():'A';
+    prefixCount[prefix]=(prefixCount[prefix]||0)+1;
+    return prefix+prefixCount[prefix];
+  });
+
+  // 3. Build old→new lookup map
   var map={};
-  oldIds.forEach(function(oid,i){if(oid)map[oid]=newIds[i];});
-  // Apply new IDs
+  oldIds.forEach(function(oid,i){ if(oid) map[oid]=newIds[i]; });
+
+  // 4. Apply new IDs to input fields
   rows.forEach(function(tr,i){
     tr.querySelector('[data-f="id"]').value=newIds[i];
   });
-  // Update predecessor references
+
+  // 5. Update ALL predecessor references using the map
   rows.forEach(function(tr){
     var inp=tr.querySelector('[data-f="preds"]');
-    if(!inp.value.trim())return;
+    if(!inp||!inp.value.trim()) return;
     inp.value=inp.value.split(',').map(function(p){
-      p=p.trim();return map[p]||p;
-    }).join(',');
+      p=p.trim();
+      return(p&&map[p])?map[p]:p;
+    }).filter(Boolean).join(',');
   });
+
+  // 6. Refresh row numbers and recalculate results
   reindex();
+  if(typeof calculate==='function') calculate();
 }
 function readRows(){
   return Array.from(document.querySelectorAll('#act-body tr')).map(function(tr){
@@ -1211,13 +1222,28 @@ function printA4(){
   var tot = all.length, pgn = 0;
   var html = all.join('').replace(/PG_IDX/g,function(){pgn++;return pgn;}).replace(/PG_TOT/g,tot);
 
-  var sheet = document.getElementById('a4-sheet');
-  sheet.innerHTML = html;
-  sheet.style.cssText = 'display:block;position:fixed;left:-9999px;top:0;';
-  setTimeout(function(){
-    window.print();
-    setTimeout(function(){sheet.style.display='none';},800);
-  },350);
+  // Abre em nova janela para impressão confiável (funciona em webviews)
+  var printWin = window.open('','_blank','width=860,height=900,scrollbars=yes');
+  if(!printWin){
+    alert('O navegador bloqueou a abertura de nova janela. Permita pop-ups para este arquivo e tente novamente.');
+    return;
+  }
+  printWin.document.write('<!DOCTYPE html><html><head><meta charset="UTF-8">'+
+    '<title>PERT/CPM — Impressão</title>'+
+    '<style>'+
+    'body{margin:0;padding:0;background:#fff;font-family:sans-serif;}'+
+    '@page{size:A4 portrait;margin:0;}'+
+    '@media print{.no-print{display:none!important;}.a4-page{page-break-after:always;}}'+
+    '</style>'+
+    // Inline the A4 styles from this page
+    document.querySelector("style").textContent.split("/* NAV */")[0]+
+    '</head><body>'+
+    '<div style="text-align:center;padding:12px;background:#111;color:#fff;" class="no-print">'+
+    '<button onclick="window.print()" style="background:#cc1010;color:#fff;border:none;padding:10px 28px;font-size:14px;font-weight:700;border-radius:5px;cursor:pointer;margin-right:10px;">🖨 Imprimir</button>'+
+    '<button onclick="window.close()" style="background:#444;color:#fff;border:none;padding:10px 18px;font-size:14px;border-radius:5px;cursor:pointer;">Fechar</button>'+
+    '</div>'+
+    html+'</body></html>');
+  printWin.document.close();
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -1232,7 +1258,9 @@ function printA4(){
 async function exportPDF(){
   if(!calcR){alert('Calcule primeiro o PERT/CPM.');return;}
   if(typeof html2canvas==='undefined'||typeof jspdf==='undefined'){
-    alert('Biblioteca PDF não carregada. Use "Imprimir A4" como alternativa.');return;
+    var msg2='Biblioteca PDF não carregada (sem conexão à internet ou bloqueada).\n\n'+
+      'Alternativa: use o botão "🖨 Imprimir A4" e salve como PDF pelo diálogo de impressão.';
+    alert(msg2);return;
   }
   var ov=document.getElementById('pdf-ov');
   var msg=document.getElementById('pdf-msg');
@@ -1341,18 +1369,48 @@ function buildPayload(){
     })
   },null,2);
 }
-function saveJSON(){
-  var blob=new Blob([buildPayload()],{type:'application/json'});
-  var url=URL.createObjectURL(blob);
-  var a=document.createElement('a');
-  a.href=url;
-  a.download='SFM_PERT_CPM.json';
-  a.click();
-  URL.revokeObjectURL(url);
+/* ── Salvar dados dentro do próprio HTML ── */
+var _htmlFileHandle=null;
+async function saveJSON(){
   var btn=document.getElementById('save-btn');
-  var orig=btn.textContent;
-  btn.textContent='✓ Salvo!';
-  setTimeout(function(){btn.textContent=orig;},1500);
+  try{
+    // Primeira vez: pede para selecionar o próprio arquivo HTML
+    if(!_htmlFileHandle){
+      var handles=await window.showOpenFilePicker({
+        id:'pert-cpm-html',
+        startIn:'documents',
+        types:[{description:'PERT/CPM HTML',accept:{'text/html':['.html','.htm']}}],
+        multiple:false
+      });
+      _htmlFileHandle=handles[0];
+    }
+    // Lê o conteúdo atual do arquivo
+    var file=await _htmlFileHandle.getFile();
+    var htmlContent=await file.text();
+    // Monta o JSON com o estado atual da tabela
+    var currentData=JSON.parse(buildPayload());
+    var dataStr=JSON.stringify(currentData);
+    // Substitui apenas o bloco de dados entre os marcadores
+    var updated=htmlContent.replace(
+      /\/\* >>PERT_DATA<< \*\/ var sfmData=\{[\s\S]*?\}; \/\* <<PERT_DATA<< \*\//,
+      '/* >>PERT_DATA<< */ var sfmData='+dataStr+'; /* <<PERT_DATA<< */'
+    );
+    if(updated===htmlContent){
+      alert('Marcador não encontrado no arquivo. Verifique se selecionou o arquivo correto.');
+      _htmlFileHandle=null;return;
+    }
+    // Grava de volta no mesmo arquivo
+    var writable=await _htmlFileHandle.createWritable();
+    await writable.write(updated);
+    await writable.close();
+    btn.textContent='✓ Salvo!';
+    setTimeout(function(){btn.textContent='💾 Salvar';},1800);
+  }catch(e){
+    if(e.name!=='AbortError'){
+      console.error(e);
+      alert('Erro ao salvar: '+e.message);
+    }
+  }
 }
 function exportJSON(){document.getElementById('export-ta').value=buildPayload();openModal('modal-export');}
 function copyExport(btn){
@@ -1420,7 +1478,7 @@ document.addEventListener('click',function(e){if(e.target.classList.contains('mo
 document.getElementById('start-date').value=todayISO();
 /* Pre-carregar projeto SFM Inova */
 (function(){
-  var sfmData={"schema":"inova-pert-v1","project":"Shop Floor Management \u2014 Inova Sistemas Eletr\u00f4nicos","startDate":"2026-04-28","timeUnit":"days","activities":[{"id":"A1","sprint":"S2","name":"Benchmarking Marcopolo e Randon","O":3,"M":5,"P":10,"preds":""},{"id":"A2","sprint":"S2","name":"Mapa mental do projeto SFM","O":8,"M":10,"P":15,"preds":"A1"},{"id":"A3","sprint":"S2","name":"Definicao dos indicadores e metas","O":2,"M":2,"P":3,"preds":"A1"},{"id":"A4","sprint":"S2","name":"Definicao da rotina N0-N4","O":2,"M":3,"P":5,"preds":"A1"},{"id":"A5","sprint":"S2","name":"Papeis e responsabilidades","O":1,"M":2,"P":3,"preds":"A4"},{"id":"A6","sprint":"S2","name":"Planejamento do cronograma de expansao","O":1,"M":1,"P":2,"preds":"A3,A4"},{"id":"A7","sprint":"S2","name":"Cadastro do projeto no make.it","O":1,"M":1,"P":1,"preds":"A1"},{"id":"A8","sprint":"S2","name":"Formulario de plano de acoes no runrun.it","O":1,"M":2,"P":3,"preds":"A7"},{"id":"A9","sprint":"S2","name":"Elaboracao do PERT/CPM","O":1,"M":2,"P":3,"preds":"A3,A4,A5,A6"},{"id":"A10","sprint":"S2","name":"TAP finalizada","O":2,"M":4,"P":7,"preds":"A2,A3,A4,A5,A6,A9"},{"id":"A11","sprint":"S2","name":"Divulgacao interna (WhatsApp e mural)","O":1,"M":2,"P":3,"preds":"A10"},{"id":"A12","sprint":"S2","name":"Reuniao com supervisor/gerente - alinhamento","O":1,"M":3,"P":5,"preds":"A10"},{"id":"A13","sprint":"S2","name":"Reuniao com direcao - Eleandro e Suzin (antes do kick-off)","O":1,"M":3,"P":5,"preds":"A10,A12"},{"id":"A14","sprint":"S2","name":"Reuniao de kick-off","O":1,"M":2,"P":3,"preds":"A13"},{"id":"A15","sprint":"S2","name":"Compra ou fabricacao do quadro fisico - URGENTE","O":15,"M":20,"P":30,"preds":"A14"},{"id":"A16","sprint":"S2","name":"Diagnostico e levantamento de baseline (base SINCRONIZA)","O":3,"M":5,"P":10,"preds":"A14"},{"id":"A17","sprint":"S2","name":"Elaboracao de materiais e conteudo de treinamento","O":3,"M":7,"P":15,"preds":"A3,A4,A16"},{"id":"A18","sprint":"S2","name":"IT da reuniao diaria (roteiro e templates N0-N4)","O":3,"M":5,"P":10,"preds":"A4,A16"},{"id":"A19","sprint":"S2","name":"Definicao do registro de acoes digital (runrun.it ou HTML)","O":2,"M":3,"P":5,"preds":"A18"},{"id":"A20","sprint":"S2","name":"Treinamento N0 e N1 - analistas e supervisores MTA Industrial","O":3,"M":5,"P":8,"preds":"A17,A18,A19"},{"id":"A21","sprint":"S2","name":"Instalacao do quadro na fabrica - MTA Industrial","O":1,"M":3,"P":5,"preds":"A15"},{"id":"A22","sprint":"S2","name":"Inicio e estabilizacao das reunioes - MTA Industrial - MARCO","O":5,"M":10,"P":20,"preds":"A20,A21"},{"id":"B1","sprint":"S3","name":"Monitoramento de aderencia MTA Industrial (meta 90%)","O":15,"M":20,"P":30,"preds":"A22"},{"id":"B2","sprint":"S3","name":"Ajustes de indicadores com base na pratica","O":5,"M":8,"P":15,"preds":"B1"},{"id":"B3","sprint":"S3","name":"Instalacao e treinamento - MTA Resfriar","O":15,"M":30,"P":60,"preds":"A22"},{"id":"B4","sprint":"S3","name":"Inicio das reunioes diarias - MTA Resfriar - MARCO","O":1,"M":1,"P":2,"preds":"B3"},{"id":"B5","sprint":"S3","name":"Instalacao e treinamento - MTA Itinerario","O":15,"M":30,"P":60,"preds":"A22"},{"id":"B6","sprint":"S3","name":"Inicio das reunioes diarias - MTA Itinerario - MARCO","O":1,"M":1,"P":2,"preds":"B5"},{"id":"B7","sprint":"S3","name":"Coaching dos facilitadores - primeiras semanas de operacao","O":10,"M":15,"P":30,"preds":"B4,B6"},{"id":"C1","sprint":"S4","name":"Instalacao e treinamento - SMT Montagem de Placas","O":15,"M":30,"P":60,"preds":"B4,B6"},{"id":"C2","sprint":"S4","name":"Inicio das reunioes diarias - SMT - MARCO","O":1,"M":1,"P":2,"preds":"C1"},{"id":"C3","sprint":"S4","name":"Revisao das metas e indicadores","O":2,"M":3,"P":5,"preds":"B1,B2"},{"id":"C4","sprint":"S4","name":"Auditoria de maturidade SFM - todas as areas","O":5,"M":10,"P":20,"preds":"C2,B7"},{"id":"C5","sprint":"S4","name":"Analise de resultados vs baseline SINCRONIZA","O":3,"M":5,"P":10,"preds":"C4"},{"id":"C6","sprint":"S4","name":"Workshop de licoes aprendidas","O":2,"M":3,"P":5,"preds":"C4"},{"id":"C7","sprint":"S4","name":"Manual Padrao Inova de Shop Floor Management","O":5,"M":10,"P":20,"preds":"C4"},{"id":"C8","sprint":"S4","name":"Handover - passagem da rotina para lideranca operacional","O":3,"M":5,"P":10,"preds":"C5,C7"},{"id":"C9","sprint":"S4","name":"Apresentacao executiva final - Daltro, Eleandro e Suzin","O":2,"M":3,"P":5,"preds":"C5,C6,C8"},{"id":"C10","sprint":"S4","name":"Documentacao e arquivamento do projeto","O":2,"M":3,"P":5,"preds":"C9"}]};
+  /* >>PERT_DATA<< */ var sfmData={"schema":"inova-pert-v1","project":"Shop Floor Management — Inova Sistemas Eletrônicos","startDate":"2026-04-28","timeUnit":"days","created":"2026-05-12","activities":[{"id":"A1","sprint":"S2","name":"Benchmarking Marcopolo e Randon","O":2,"M":4,"P":10,"preds":""},{"id":"A2","sprint":"S2","name":"Cadastro do projeto no Runrun.it","O":1,"M":2,"P":5,"preds":""},{"id":"A3","sprint":"S2","name":"Diagnóstico e levantamento de baseline (base SINCRONIZA)","O":3,"M":5,"P":10,"preds":"A2"},{"id":"A4","sprint":"S2","name":"Mapa mental do projeto SFM","O":3,"M":5,"P":10,"preds":"A2"},{"id":"A5","sprint":"S2","name":"Definição dos indicadores e metas","O":2,"M":2,"P":5,"preds":"A4"},{"id":"A6","sprint":"S2","name":"Definição da rotina N0-N4","O":2,"M":3,"P":5,"preds":"A4"},{"id":"A7","sprint":"S2","name":"Papéis e responsabilidades","O":1,"M":2,"P":3,"preds":"A4"},{"id":"A8","sprint":"S2","name":"Elaboração template Plano de ações no runrun.it","O":1,"M":2,"P":3,"preds":"A4"},{"id":"A9","sprint":"S2","name":"Elaboração do PERT/CPM","O":3,"M":5,"P":7,"preds":"A5,A6,A7"},{"id":"A10","sprint":"S2","name":"TAP finalizada","O":3,"M":5,"P":7,"preds":"A4,A5,A6,A7,A9"},{"id":"A11","sprint":"S2","name":"Cadastro do projeto no make.it","O":1,"M":1,"P":1,"preds":"A10"},{"id":"A12","sprint":"S2","name":"Reunião com supervisor/gerente - alinhamento","O":1,"M":1,"P":1,"preds":"A10"},{"id":"A13","sprint":"S2","name":"Reunião com direção (antes do kick-off)","O":1,"M":2,"P":5,"preds":"A10,A12"},{"id":"A14","sprint":"S2","name":"Divulgação interna (WhatsApp, Teams e mural)","O":1,"M":2,"P":3,"preds":"A13"},{"id":"A15","sprint":"S2","name":"Reunião de kick-off","O":1,"M":2,"P":3,"preds":"A13"},{"id":"A16","sprint":"S2","name":"Compra ou fabricação do quadro físico - URGENTE","O":15,"M":25,"P":40,"preds":"A4"},{"id":"A17","sprint":"S2","name":"IT SFM","O":3,"M":5,"P":10,"preds":"A6,A2"},{"id":"A18","sprint":"S2","name":"Elaboração de materiais e conteúdo de treinamento","O":3,"M":5,"P":7,"preds":"A5,A6,A7,A8,A13,A15"},{"id":"A19","sprint":"S2","name":"Treinamento N0 e N1 - puxadores de linha, analistas e supervisores MTA Industrial","O":3,"M":5,"P":7,"preds":"A18,A17"},{"id":"A20","sprint":"S2","name":"Instalação do quadro na fábrica - MTA Industrial","O":1,"M":3,"P":5,"preds":"A16"},{"id":"A21","sprint":"S2","name":"Início e estabilização das reuniões - MTA Industrial - MARCO","O":10,"M":15,"P":30,"preds":"A19,A20"},{"id":"B1","sprint":"S3","name":"Monitoramento de aderência MTA Industrial (meta 90%)","O":15,"M":20,"P":30,"preds":"A21"},{"id":"B2","sprint":"S3","name":"Ajustes de indicadores com base na prática","O":5,"M":8,"P":15,"preds":"B1"},{"id":"B3","sprint":"S3","name":"Instalação e treinamento - MTA Resfriar","O":15,"M":30,"P":60,"preds":"A2"},{"id":"B4","sprint":"S3","name":"Início das reuniões diárias - MTA Resfriar - MARCO","O":1,"M":1,"P":2,"preds":"B3"},{"id":"B5","sprint":"S3","name":"Instalação e treinamento - MTA Itinerário","O":15,"M":30,"P":60,"preds":"B4"},{"id":"B6","sprint":"S3","name":"Início das reuniões diárias - MTA Itinerário - MARCO","O":1,"M":3,"P":7,"preds":"B5"},{"id":"C1","sprint":"S4","name":"Instalação e treinamento - SMT Montagem de Placas","O":15,"M":30,"P":60,"preds":"B6"},{"id":"C2","sprint":"S4","name":"Início das reuniões diárias - SMT - MARCO","O":1,"M":1,"P":2,"preds":"C1"},{"id":"C3","sprint":"S4","name":"Revisão das metas e indicadores","O":2,"M":3,"P":5,"preds":"B1,B2"},{"id":"C4","sprint":"S4","name":"Auditoria de maturidade SFM","O":5,"M":10,"P":20,"preds":"B1"},{"id":"C5","sprint":"S4","name":"Manual Padrão Inova de Shop Floor Management","O":5,"M":10,"P":20,"preds":"C4"},{"id":"C6","sprint":"S4","name":"Handover - passagem da rotina para lideranca operacional","O":3,"M":5,"P":10,"preds":"C5"},{"id":"C7","sprint":"S4","name":"Planejamento do cronograma de expansão","O":1,"M":1,"P":2,"preds":"C6"},{"id":"C8","sprint":"S4","name":"Workshop de lições aprendidas","O":2,"M":3,"P":5,"preds":"C7"}]}; /* <<PERT_DATA<< */
   clearAll();
   document.getElementById('proj-name').value=sfmData.project||'';
   document.getElementById('start-date').value=sfmData.startDate||todayISO();
